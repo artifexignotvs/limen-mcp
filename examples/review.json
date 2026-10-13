@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "container-fixture": {
+      "command": "docker",
+      "args": ["run", "--rm", "--privileged", "--network=host", "-v", "/var/run/docker.sock:/socket:ro", "fixture-image:1.0"]
+    },
+    "package-fixture": {
+      "command": "npx",
+      "args": ["--yes", "@example/fixture-server@latest"]
+    },
+    "remote-fixture": {
+      "type": "http",
+      "url": "http://example.invalid/mcp",
+      "headers": {"Authorization": "${MCP_AUTH_INPUT}"}
+    }
+  }
+}

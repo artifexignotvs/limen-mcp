@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "local-fixture": {
+      "command": "python3",
+      "args": ["-m", "your_local_server"]
+    }
+  }
+}
