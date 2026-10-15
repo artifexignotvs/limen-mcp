@@ -175,7 +175,7 @@ class AuditTests(unittest.TestCase):
         self.assertNotIn("LM046", self.rules({"command": "docker", "args": ["run", "-v", "named-volume:/data", "image:1"]}))
 
     def test_docker_image_command_is_not_treated_as_docker_options(self):
-        self.assertEqual(self.rules({"command": "docker", "args": ["run", "image:1", "--privileged", "--network=host"]}), set())
+        self.assertEqual(self.rules({"command": "docker", "args": ["run", "image:1", "--privileged", "--network=host"]}), {"LM048"})
 
     def test_docker_environment_inheritance_is_explicit(self):
         self.assertIn("LM047", self.rules({"command": "docker", "args": ["run", "-e", "TOKEN", "image:1"]}))
