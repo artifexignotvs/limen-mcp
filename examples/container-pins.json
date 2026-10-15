@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "digest-example": {
+      "command": "docker",
+      "args": ["run", "--rm", "registry.invalid/demo/server@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+    },
+    "tag-example": {
+      "command": "docker",
+      "args": ["run", "--rm", "registry.invalid/demo/server:1.2.3"]
+    }
+  }
+}
