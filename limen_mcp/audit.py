@@ -10,7 +10,7 @@ from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 MAX_BYTES = 1_048_576
 SEVERITY = {"low": 1, "medium": 2, "high": 3, "critical": 4}
 _SECRET = re.compile(r"(?:^|[_-])(?:token|password|passwd|secret|api[_-]?key|access[_-]?key|private[_-]?key)$", re.I)
@@ -370,13 +370,16 @@ def _audit_docker(args: list[str], add: Any) -> None:
     index = 1
     while index < len(args):
         arg = args[index]
-        if arg == "--" or not arg.startswith("-"):
+        if arg == "--":
+            index += 1
+            break
+        if not arg.startswith("-"):
             break
         key, separator, value = arg.partition("=")
         if key in _DOCKER_BOOLEAN_OPTIONS:
             if separator and value not in {"1", "t", "T", "TRUE", "true", "True", "0", "f", "F", "FALSE", "false", "False"}:
                 _incomplete(add, "docker")
-                break
+                return
             if key == "--privileged" and (not separator or value in {"1", "t", "T", "TRUE", "true", "True"}):
                 add("LM040", "critical", f".args[{index}]", "Docker privileged mode grants broad host capabilities.",
                     "Remove privileged mode and grant only the narrowly required capabilities and devices.")
@@ -387,11 +390,11 @@ def _audit_docker(args: list[str], add: Any) -> None:
                 key, value, separator = arg[:2], arg[2:], "="
             else:
                 _incomplete(add, "docker")
-                break
+                return
         if not separator:
             if index + 1 >= len(args):
                 _incomplete(add, "docker")
-                break
+                return
             index += 1
             value = args[index]
         field = f".args[{index}]"
@@ -418,6 +421,17 @@ def _audit_docker(args: list[str], add: Any) -> None:
                 add("LM001", "high", field, "Docker environment option contains a literal credential-bearing value; key and value withheld.",
                     "Use a documented secret input mechanism and rotate exposed credentials.")
         index += 1
+
+    if index >= len(args):
+        _incomplete(add, "docker")
+        return
+    image = args[index]
+    if "@" not in image:
+        add("LM048", "medium", f".args[{index}]", "Docker image uses a mutable tag or an implicit default tag rather than a digest.",
+            "Pin a reviewed image digest and plan updates; tags can be reassigned. A digest does not prove publisher trust or image safety.")
+    elif not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/:+-]*@sha256:[0-9a-f]{64}", image):
+        add("LM049", "low", f".args[{index}]", "Docker image digest is malformed or outside the supported SHA-256 reference form.",
+            "Review the reference manually and use a verified digest; reference syntax alone does not establish image trust.")
 
 
 def _audit_mount(key: str, value: str, field: str, add: Any) -> None:

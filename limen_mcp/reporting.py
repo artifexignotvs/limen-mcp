@@ -1,0 +1,194 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from collections import Counter
+from pathlib import Path
+from urllib.parse import quote
+
+TOOL = 'limen-mcp'
+VERSION = "0.2.0"
+LEVELS = {'low': 1, 'medium': 2, 'high': 3, 'critical': 4}
+RULES = {'LM042', 'LM041', 'LM043', 'LM046', 'LM047', 'LM049', 'LM030', 'LM020', 'LM044', 'LM048', 'LM090', 'LM001', 'LM002', 'LM011', 'LM031', 'LM045', 'LM010', 'LM040'}
+MAX_BASELINE_BYTES = 1_048_576
+
+
+class BaselineError(ValueError):
+    pass
+
+
+def _unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise BaselineError("Baseline contains duplicate keys.")
+        result[key] = value
+    return result
+
+
+def label_value(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", value):
+        raise BaselineError("Baseline label must be a public identifier of 1 to 64 letters, digits, hyphens or underscores.")
+    return value
+
+
+def artifact_value(value):
+    if not isinstance(value, str) or len(value) > 240 or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]*", value):
+        raise BaselineError("SARIF artifact must be an explicitly public repository-relative path.")
+    if any(part in {"", ".", ".."} for part in value.split("/")):
+        raise BaselineError("SARIF artifact must not contain empty or relative traversal segments.")
+    return value
+
+
+def _scope(value):
+    return re.sub(r"\[\d+\]", "[*]", value["location"])
+
+
+def snapshot(findings, label):
+    """Indices mobiles excludit; genera et numeri tantum servantur."""
+    groups = Counter((f["rule_id"], _scope(f), f["severity"]) for f in findings)
+    if sum(groups.values()) > 100000 or len(groups) > 10000:
+        raise BaselineError("Finding counts exceed the supported snapshot limit.")
+    return {
+        "schema_version": 1, "tool": TOOL, "tool_version": VERSION,
+        "label": label_value(label), "comparison_scope": "aggregate-rule-scope",
+        "findings": [{"rule_id": rule, "scope": scope, "severity": severity, "count": count}
+                     for (rule, scope, severity), count in sorted(groups.items())],
+    }
+
+
+def load_baseline(data, label):
+    """Relationem alienam stricte probat nec eius verba repetit."""
+    try:
+        if len(data) > MAX_BASELINE_BYTES:
+            raise ValueError()
+        value = json.loads(data.decode("utf-8-sig"), object_pairs_hook=_unique,
+                           parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        if not isinstance(value, dict) or set(value) != {"schema_version", "tool", "tool_version", "label", "comparison_scope", "findings"}:
+            raise ValueError()
+        if type(value["schema_version"]) is not int or value["schema_version"] != 1 or value["tool"] != TOOL:
+            raise ValueError()
+        if not isinstance(value["tool_version"], str) or not re.fullmatch(r"0\.2\.[0-9]+", value["tool_version"]):
+            raise ValueError()
+        if value["comparison_scope"] != "aggregate-rule-scope" or label_value(value["label"]) != label_value(label):
+            raise ValueError()
+        findings = value["findings"]
+        if not isinstance(findings, list) or len(findings) > 10000:
+            raise ValueError()
+        seen = set()
+        total = 0
+        for item in findings:
+            if not isinstance(item, dict) or set(item) != {"rule_id", "scope", "severity", "count"}:
+                raise ValueError()
+            rule, scope, severity = item["rule_id"], item["scope"], item["severity"]
+            if not isinstance(rule, str) or rule not in RULES or not isinstance(severity, str) or severity not in LEVELS:
+                raise ValueError()
+            if not isinstance(scope, str) or not re.fullmatch('(?:mcpServers|servers)\\.server\\[\\*\\](?:\\.(?:command|transport|url(?:\\.query)?|args(?:\\[\\*\\])?|(?:env|headers)\\.entry\\[\\*\\]))?', scope):
+                raise ValueError()
+            if type(item["count"]) is not int or not 1 <= item["count"] <= 100000:
+                raise ValueError()
+            key = rule, scope, severity
+            if key in seen:
+                raise ValueError()
+            seen.add(key)
+            total += item["count"]
+        if total > 100000:
+            raise ValueError()
+        return value
+    except (ValueError, TypeError, UnicodeError, RecursionError, OverflowError):
+        raise BaselineError("Invalid or incompatible baseline; expected this tool's schema 1, version 0.2, matching label and bounded finding counts.") from None
+
+
+def compare(current, previous):
+    """Paria ordinum non fingit; mutationes gregum exponit."""
+    before = {(f["rule_id"], f["scope"], f["severity"]): f["count"] for f in previous["findings"]}
+    after = {(f["rule_id"], f["scope"], f["severity"]): f["count"] for f in current["findings"]}
+    result = {"scope": "aggregate-rule-scope", "added": [], "resolved": [], "unchanged": [], "severity_changed": []}
+    for rule, scope in sorted({key[:2] for key in before} | {key[:2] for key in after}):
+        old, new = {}, {}
+        for severity in LEVELS:
+            a, b = before.get((rule, scope, severity), 0), after.get((rule, scope, severity), 0)
+            common = min(a, b)
+            if common:
+                result["unchanged"].append({"rule_id": rule, "scope": scope, "severity": severity, "count": common})
+            old[severity], new[severity] = a - common, b - common
+        for source in LEVELS:
+            for target in LEVELS:
+                count = min(old[source], new[target])
+                if count:
+                    result["severity_changed"].append({"rule_id": rule, "scope": scope, "from": source, "to": target, "count": count})
+                    old[source] -= count
+                    new[target] -= count
+        for severity in LEVELS:
+            for key, remaining in (("resolved", old), ("added", new)):
+                if remaining[severity]:
+                    result[key].append({"rule_id": rule, "scope": scope, "severity": severity, "count": remaining[severity]})
+    result["summary"] = {key: sum(item["count"] for item in result[key]) for key in ("added", "resolved", "unchanged", "severity_changed")}
+    return result
+
+
+def fail_new(comparison, threshold):
+    if threshold not in LEVELS:
+        return False
+    return any(LEVELS[f["severity"]] >= LEVELS[threshold] for f in comparison["added"]) or any(
+        LEVELS[f["to"]] > LEVELS[f["from"]] and LEVELS[f["to"]] >= LEVELS[threshold]
+        for f in comparison["severity_changed"])
+
+
+def read_baseline(path, label):
+    try:
+        with Path(path).open("rb") as handle:
+            return load_baseline(handle.read(MAX_BASELINE_BYTES + 1), label)
+    except OSError:
+        raise BaselineError("Baseline could not be read; path and system details withheld.") from None
+
+
+def write_baseline(path, value):
+    """Exemplar vetus non delet; destinatio nova esse debet."""
+    try:
+        with Path(path).open("x", encoding="utf-8") as handle:
+            json.dump(value, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+    except OSError:
+        raise BaselineError("Baseline could not be created; choose a new writable destination. Existing files are never overwritten.") from None
+
+
+def sarif(findings, errors=(), comparison=None, artifact=None):
+    """SARIF sine capitibus, secretis aut viis privatis construit."""
+    artifact = artifact_value(artifact or "limen-report.json")
+    grouped = Counter((f["rule_id"], _scope(f), f["severity"]) for f in findings)
+    groups = [{"rule_id": rule, "scope": scope, "severity": severity, "count": count}
+              for (rule, scope, severity), count in sorted(grouped.items())]
+    rules = sorted({f["rule_id"] for f in groups})
+    by_rule = {rule: next(f for f in findings if f["rule_id"] == rule) for rule in rules}
+    results = []
+    for group in groups:
+        rule, scope, severity = group["rule_id"], group["scope"], group["severity"]
+        finding = by_rule[rule]
+        key = f"{TOOL}|{rule}|{scope}|{severity}"
+        item = {
+            "ruleId": rule, "ruleIndex": rules.index(rule),
+            "level": {'low': 'note', 'medium': 'warning', 'high': 'error', 'critical': 'error'}[severity],
+            "message": {"text": f"{group['count']} observation(s) in {scope}. " + re.sub(r"Cookie #[0-9]+", "A cookie", finding["message"])},
+            "partialFingerprints": {"ruleScope/v1": hashlib.sha256(key.encode()).hexdigest(),
+                                    "primaryLocationLineHash": hashlib.sha256(key.encode()).hexdigest()},
+            "properties": {"severity": severity, "count": group["count"], "scope": scope},
+            "locations": [{"logicalLocations": [{"fullyQualifiedName": scope, "kind": "module"}]}],
+        }
+        if artifact is not None:
+            item["locations"][0]["physicalLocation"] = {"artifactLocation": {"uri": quote(artifact_value(artifact), safe="/._-"), "uriBaseId": "%SRCROOT%"}, "region": {"startLine": 1}}
+        results.append(item)
+    run = {"tool": {"driver": {"name": TOOL, "semanticVersion": VERSION,
+             "informationUri": f"https://github.com/artifexignotvs/{TOOL}",
+             "rules": [{"id": rule, "shortDescription": {"text": re.sub(r"Cookie #[0-9]+", "A cookie", by_rule[rule]["message"])[:1024]},
+                        "help": {"text": by_rule[rule]["remediation"]}} for rule in rules]}},
+           "automationDetails": {"id": TOOL + "/"}, "results": results,
+           "invocations": [{"executionSuccessful": not bool(errors)}]}
+    if artifact is not None:
+        run["originalUriBaseIds"] = {"%SRCROOT%": {"uri": "file:///source/"}}
+    if errors:
+        run["invocations"][0]["toolExecutionNotifications"] = [{"level": "error", "message": {"text": "Audit did not complete; input or baseline validation failed."}}]
+    if comparison is not None:
+        run["properties"] = {"comparison": comparison}
+    return {"$schema": "https://json.schemastore.org/sarif-2.1.0.json", "version": "2.1.0", "runs": [run]}
