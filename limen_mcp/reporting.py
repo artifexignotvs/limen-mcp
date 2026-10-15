@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import stat
 from collections import Counter
 from pathlib import Path
 from urllib.parse import quote
@@ -136,10 +138,29 @@ def fail_new(comparison, threshold):
         for f in comparison["severity_changed"])
 
 
+def _file_signature(info):
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
 def read_baseline(path, label):
+    """Fistulae et nexus reiciuntur; lectio finita stabilitatem requirit."""
     try:
-        with Path(path).open("rb") as handle:
-            return load_baseline(handle.read(MAX_BASELINE_BYTES + 1), label)
+        expected = os.lstat(path)
+        if not stat.S_ISREG(expected.st_mode):
+            raise BaselineError("Baseline must be a regular file, not a symbolic link or special file.")
+        if expected.st_size > MAX_BASELINE_BYTES:
+            raise BaselineError("Baseline exceeds the supported byte limit.")
+        flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as handle:
+            before = os.fstat(handle.fileno())
+            if not stat.S_ISREG(before.st_mode) or _file_signature(expected) != _file_signature(before):
+                raise BaselineError("Baseline changed before it could be read.")
+            data = handle.read(MAX_BASELINE_BYTES + 1)
+            after, current = os.fstat(handle.fileno()), os.lstat(path)
+            if _file_signature(before) != _file_signature(after) or _file_signature(after) != _file_signature(current):
+                raise BaselineError("Baseline changed while being read.")
+        return load_baseline(data, label)
     except OSError:
         raise BaselineError("Baseline could not be read; path and system details withheld.") from None
 
