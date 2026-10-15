@@ -1,0 +1,45 @@
+{
+  "comparison_scope": "aggregate-rule-scope",
+  "findings": [
+    {
+      "count": 1,
+      "rule_id": "LM010",
+      "scope": "mcpServers.server[*].url",
+      "severity": "high"
+    },
+    {
+      "count": 1,
+      "rule_id": "LM030",
+      "scope": "mcpServers.server[*].args[*]",
+      "severity": "medium"
+    },
+    {
+      "count": 1,
+      "rule_id": "LM040",
+      "scope": "mcpServers.server[*].args[*]",
+      "severity": "critical"
+    },
+    {
+      "count": 1,
+      "rule_id": "LM041",
+      "scope": "mcpServers.server[*].args[*]",
+      "severity": "high"
+    },
+    {
+      "count": 1,
+      "rule_id": "LM045",
+      "scope": "mcpServers.server[*].args[*]",
+      "severity": "critical"
+    },
+    {
+      "count": 1,
+      "rule_id": "LM048",
+      "scope": "mcpServers.server[*].args[*]",
+      "severity": "medium"
+    }
+  ],
+  "label": "synthetic-example",
+  "schema_version": 1,
+  "tool": "limen-mcp",
+  "tool_version": "0.2.0"
+}

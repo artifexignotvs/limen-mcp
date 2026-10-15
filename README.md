@@ -121,6 +121,46 @@ python3 -m limen_mcp path/to/config.json --format json --fail-on high > audit.js
 
 The default threshold is `medium`. `--fail-on low` also fails on incomplete launcher coverage. `--fail-on never` reports findings without failing for them; input errors still exit `2`. Invalid CLI invocation is handled by the argument parser and is not a JSON audit report.
 
+
+## New in 0.2: regression gates and SARIF
+
+Create a separate, redacted baseline snapshot:
+
+```sh
+python3 -m limen_mcp examples/review.json \
+  --write-baseline baseline.json --baseline-label workstation --fail-on never
+python3 -m limen_mcp examples/review.json \
+  --baseline baseline.json --baseline-label workstation --fail-on-new --format json
+```
+
+The second command exits `0` for unchanged findings. With `--fail-on-new`, added findings or severity increases meeting `--fail-on` exit `1`; resolved findings and severity decreases do not fail the gate. Without `--fail-on-new`, the original full-report threshold still applies. Input and baseline errors always exit `2`. Baseline operations require a matching public label; choose an opaque identifier, never a secret. Writing requires a new destination and never overwrites an existing baseline or configuration. Review changes before replacing a trusted baseline yourself.
+
+**Identity limits:** server names and sensitive keys never enter a snapshot. Individual ordinal locations are not stable identities: renaming, adding, or removing a server can shift every later `server[n]`, and argument/entry positions can change. Snapshots therefore compare aggregate counts by rule, root and field kind, replacing ordinal indices with `[*]`. They do not pretend to match the same server across revisions. Moving one risky setting to a different server while fixing another can leave counts unchanged. For server-specific gates, audit separately scoped configurations under separate labels. A label is your assertion of scope, not a verification of configuration identity.
+
+The optional JSON `comparison` object contains `added`, `resolved`, `unchanged`, and `severity_changed` arrays plus a `summary` of observation counts. Entries contain `rule_id`, `scope`, `severity`, and `count`; severity changes replace `severity` with `from` and `to`. Matching first cancels equal severity counts, then pairs remaining severity counts in ascending order. Such pairs describe aggregate severity shifts, not proven identity matches. Existing successful JSON retains `schema_version: 1` and all original fields.
+
+A ready-made synthetic snapshot is included at `examples/review.baseline.json`, labeled `synthetic-example`.
+
+Baseline snapshots are a distinct schema, not ordinary reports: `schema_version: 1`, `tool: "limen-mcp"`, `tool_version`, `label`, `comparison_scope: "aggregate-rule-scope"`, and `findings`. Each finding is a rule/scope/severity/count group. Version 0.2 snapshots only are accepted; unknown fields, unknown rules, duplicate keys/groups, invalid labels/counts, and incompatible versions fail closed. Input is capped at 1 MiB, 10,000 groups and 100,000 total observations. Message wording, names, values, original paths, hashes of secrets and timestamps are absent. Scope/risk counts still reveal configuration characteristics.
+
+### SARIF 2.1.0
+
+```sh
+python3 -m limen_mcp examples/review.json --format json --fail-on never > limen-report.json
+python3 -m limen_mcp examples/review.json --format sarif \
+  --sarif-artifact limen-report.json --fail-on never > limen.sarif
+```
+
+SARIF groups findings with stable rule/scope/severity fingerprints, severity levels, rule help and execution status. It contains no source configuration names or values. Its default physical artifact is the public name `limen-report.json`, with a summary anchor on line 1, not an invented line inside the private configuration. `--sarif-artifact` accepts an explicitly public repository-relative report path. Never put a private path in that option. Produce that reviewed report in the checkout before uploading SARIF to a code-scanning service. The synthetic `%SRCROOT%` URI is `file:///source/`; consumers requiring an absolute checkout URI should map that base to their checkout. Upload permissions and service availability remain the user's responsibility. The exporter is schema-validated; live service ingestion has not been tested.
+
+The report's fingerprint captures the public rule, aggregate scope and severity only; it has the same identity limitations as the baseline. No numeric vulnerability score is invented. An input failure produces valid SARIF with `executionSuccessful: false` and a generic diagnostic, still exiting `2`.
+
+### Container image references
+
+`LM048` reports mutable Docker tags, including version-looking tags and implicit `latest`, at medium severity. `LM049` reports malformed or unsupported digest forms at low severity. A syntactically complete SHA-256 image reference avoids those two findings; it does not establish image trust, publisher identity, signature validity or safe contents. Limen never pulls an image. Unknown launcher options stop inspection before guessing the image boundary. Try the wholly synthetic `examples/container-pins.json` fixture.
+
+Format references: [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/sarif-v2.1.0-os.html) and [code-scanning SARIF support](https://docs.github.com/en/code-security/reference/code-scanning/sarif-files/sarif-support).
+
 ## Deliberate limits
 
 - **Audit only.** Limen is not a sandbox, a runtime firewall, a permission broker, or a test of model behavior. A clean report is not a security guarantee.
