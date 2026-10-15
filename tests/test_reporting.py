@@ -2,11 +2,13 @@ import copy
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from limen_mcp.reporting import BaselineError, MAX_BASELINE_BYTES, artifact_value, compare, fail_new, load_baseline, sarif, snapshot
+from limen_mcp.reporting import BaselineError, MAX_BASELINE_BYTES, artifact_value, compare, fail_new, load_baseline, sarif, snapshot, read_baseline
 from limen_mcp.__main__ import main
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +37,36 @@ class ReportingTests(unittest.TestCase):
     def test_snapshot_rejects_counts_it_cannot_load(self):
         with self.assertRaises(BaselineError):
             snapshot([self.finding()] * 100001, "fixture")
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO fixtures require POSIX")
+    def test_reader_rejects_fifo_symlink_and_directory_without_opening(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "baseline.json"
+            target.write_text(json.dumps(self.baseline()))
+            link = root / "link"
+            link.symlink_to(target)
+            pipe = root / "pipe"
+            os.mkfifo(pipe)
+            for value in (pipe, link, root):
+                with self.subTest(path=value), patch("limen_mcp.reporting.os.open", side_effect=AssertionError("Special file opened")):
+                    with self.assertRaises(BaselineError):
+                        read_baseline(value, "fixture")
+            self.assertEqual(read_baseline(target, "fixture"), self.baseline())
+
+    def test_reader_detects_file_replacement_and_oversize_before_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first, replacement = root / "first", root / "second"
+            first.write_text(json.dumps(self.baseline()))
+            replacement.write_text(json.dumps(self.baseline()))
+            original, replaced = os.lstat(first), os.lstat(replacement)
+            with patch("limen_mcp.reporting.os.lstat", side_effect=[original, replaced]):
+                with self.assertRaisesRegex(BaselineError, "changed"):
+                    read_baseline(first, "fixture")
+            with patch("limen_mcp.reporting.MAX_BASELINE_BYTES", 8), patch("limen_mcp.reporting.os.open", side_effect=AssertionError("Oversize file opened")):
+                with self.assertRaises(BaselineError):
+                    read_baseline(first, "fixture")
 
     def test_baseline_roundtrip(self):
         value = self.baseline()
